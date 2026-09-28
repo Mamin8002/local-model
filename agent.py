@@ -854,28 +854,65 @@ def execute_action(action_data, scale_x, scale_y, img_w, img_h, full_screenshot)
             log(f"✓ {desc}", "SUCCESS")
             return desc
 
-        # ── ТЕКСТ ──
+        # ── ТЕКСТ (УНИВЕРСАЛЬНЫЙ ВВОД) ──
         elif action == "type_text":
             text = action_data.get("text", "")
             if not text:
                 return None
-            log(f"⌨ '{text}'")
-            time.sleep(0.3)
 
-            has_non_ascii = any(ord(c) > 127 for c in text)
-            if has_non_ascii:
-                if copy_to_clipboard(text):
-                    time.sleep(0.2)
-                    hotkey = 'command' if sys.platform == "darwin" else 'ctrl'
-                    pyautogui.hotkey(hotkey, 'v')
-                    time.sleep(0.2)
-                else:
-                    log("Ошибка буфера", "ERROR")
-                    return None
-            else:
-                pyautogui.write(text, interval=0.03)
+            log(f"⌨ Текст: '{text[:50]}{'...' if len(text) > 50 else ''}'")
 
-            return f"type('{text}')"
+            # 1. Сбрасываем все модификаторы
+            for mod in ["shift", "shiftleft", "shiftright", "ctrl", "ctrlleft", "ctrlright",
+                        "alt", "altleft", "altright"]:
+                try:
+                    pyautogui.keyUp(mod)
+                except Exception:
+                    pass
+
+            time.sleep(0.15)
+
+            # 2. ВСЕГДА используем буфер обмена — это 100% надёжно
+            # Работает с любой раскладкой, любыми символами, любой длиной
+            old_clip = ""
+            try:
+                if HAS_PYPERCLIP:
+                    old_clip = pyperclip.paste() or ""
+            except Exception:
+                old_clip = ""
+
+            if not copy_to_clipboard(text):
+                log("Не удалось скопировать в буфер", "ERROR")
+                return None
+
+            time.sleep(0.1)
+
+            # 3. Вставка через горячие клавиши
+            paste_mod = 'command' if sys.platform == "darwin" else 'ctrl'
+
+            # Убеждаемся, что никакие другие модификаторы не зажаты
+            pyautogui.keyUp('shift')
+            pyautogui.keyUp('alt')
+            time.sleep(0.05)
+
+            pyautogui.hotkey(paste_mod, 'v')
+            time.sleep(0.2)
+
+            # 4. Восстанавливаем буфер пользователя
+            if old_clip:
+                def _restore():
+                    time.sleep(1.5)
+                    try:
+                        copy_to_clipboard(old_clip)
+                    except Exception:
+                        pass
+
+                import threading
+                threading.Thread(target=_restore, daemon=True).start()
+
+            desc = f"type('{text[:30]}')" if len(text) <= 30 else f"type('{text[:30]}...')"
+            log(f"✓ Вставлено через буфер", "SUCCESS")
+            return desc
 
         # ── ОДИНАРНАЯ КЛАВИША ──
         elif action == "press_key":
