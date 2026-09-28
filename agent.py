@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-AI-Агент через OpenRouter API
-Модель: qwen/qwen3.8-27b (Vision + Reasoning)
+AI-Агент через OpenRouter API с расширенными возможностями:
+- Drag & Drop (перетаскивание)
+- Любые клавиши и комбинации
+- Удержание клавиш (key_down / key_up)
+- Модели: Qwen3.8-27B, Gemini, Claude, GPT-4o
 """
 
 import requests
@@ -51,23 +54,23 @@ if sys.platform == "win32":
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 HTTP_REFERRER = "http://localhost:8080"
-APP_TITLE = "AI-Agent-Qwen3.8"
+APP_TITLE = "AI-Agent-Extended"
 
-# ── Модель Qwen3.8 27B с Vision + Reasoning ──
+# ── Модель ──
 MODEL_NAME = "stealth/space-bunny-alpha"
 
-# ── Reasoning настройки ──
+# ── Reasoning ──
 ENABLE_REASONING = True
-REASONING_EFFORT = "high"  # "low", "medium", "high"
+REASONING_EFFORT = "high"
 
 # ── Агент ──
 SCREEN_WIDTH = 1280
 CLICK_DELAY = 2
-MAX_STEPS = 1000
+MAX_STEPS = 100
 WAIT_AFTER = 1.5
 MAX_RETRIES = 2
 TIMEOUT = 90
-MAX_HISTORY = 100  # Сколько предыдущих шагов хранить в контексте
+MAX_HISTORY = 100
 
 # ── Отладка ──
 SAVE_LOG = True
@@ -88,11 +91,78 @@ log_lines = []
 running = True
 step_counter = 0
 total_cost = 0.0
+conversation_history = []
 
 # ═══════════════════════════════════════════════════════
-#   История для reasoning continuity (сохраняем между шагами)
+#   ПОЛНЫЙ МАППИНГ КЛАВИШ PYAUTOGUI
 # ═══════════════════════════════════════════════════════
-conversation_history = []
+KEY_ALIASES = {
+    # Базовые
+    "enter": "enter", "return": "enter",
+    "esc": "escape", "escape": "escape",
+    "tab": "tab", "backspace": "backspace",
+    "delete": "delete", "del": "delete",
+    "insert": "insert", "ins": "insert",
+    "space": "space", "spacebar": "space",
+
+    # Стрелки
+    "up": "up", "down": "down", "left": "left", "right": "right",
+    "arrow_up": "up", "arrow_down": "down", "arrow_left": "left", "arrow_right": "right",
+
+    # Навигация
+    "home": "home", "end": "end",
+    "pageup": "pageup", "pgup": "pageup", "page_up": "pageup",
+    "pagedown": "pagedown", "pgdn": "pagedown", "page_down": "pagedown",
+
+    # Модификаторы
+    "ctrl": "ctrl", "control": "ctrl",
+    "shift": "shift",
+    "alt": "alt", "option": "alt",
+    "win": "win", "windows": "win", "cmd": "win", "command": "win", "super": "win",
+
+    # Функциональные f1-f24
+    **{f"f{i}": f"f{i}" for i in range(1, 25)},
+
+    # NumPad
+    **{f"numpad{i}": f"num{i}" for i in range(10)},
+    **{f"num{i}": f"num{i}" for i in range(10)},
+    "numpad_enter": "enter",
+    "numpad_add": "add", "numpad_plus": "add",
+    "numpad_subtract": "subtract", "numpad_minus": "subtract",
+    "numpad_multiply": "multiply", "numpad_star": "multiply",
+    "numpad_divide": "divide", "numpad_slash": "divide",
+    "numpad_decimal": "decimal", "numpad_dot": "decimal",
+
+    # Специальные
+    "printscreen": "printscreen", "prtsc": "printscreen", "print_screen": "printscreen",
+    "scrolllock": "scrolllock", "scroll_lock": "scrolllock",
+    "capslock": "capslock", "caps_lock": "capslock",
+    "numlock": "numlock", "num_lock": "numlock",
+    "pause": "pause", "break": "pause",
+
+    # Медиа
+    "volumeup": "volumeup", "volume_up": "volumeup", "volup": "volumeup",
+    "volumedown": "volumedown", "volume_down": "volumedown", "voldn": "volumedown",
+    "volumemute": "volumemute", "volume_mute": "volumemute", "mute": "volumemute",
+    "playpause": "playpause", "play": "playpause",
+    "nexttrack": "nexttrack", "next": "nexttrack",
+    "prevtrack": "prevtrack", "prev": "prevtrack", "previous": "prevtrack",
+
+    # Символы
+    "minus": "minus", "dash": "minus",
+    "equals": "equals", "equal": "equals",
+    "leftbracket": "leftbracket",
+    "rightbracket": "rightbracket",
+    "backslash": "backslash",
+    "semicolon": "semicolon",
+    "apostrophe": "apostrophe", "quote": "apostrophe",
+    "comma": "comma",
+    "period": "period", "dot": "period",
+    "slash": "slash", "divide": "slash",
+
+    # Мышь (для key_down/key_up)
+    "mouse_left": "left", "mouse_right": "right", "mouse_middle": "middle",
+}
 
 
 # ───────────────────────────────────────────────────────
@@ -135,6 +205,20 @@ def save_log():
 def signal_handler(sig, frame):
     global running
     log("Остановлено пользователем", "WARN")
+    # Отпускаем все зажатые клавиши при выходе
+    try:
+        for key in ["ctrl", "shift", "alt", "win", "command"]:
+            try:
+                pyautogui.keyUp(key)
+            except Exception:
+                pass
+        for btn in ["left", "right", "middle"]:
+            try:
+                pyautogui.mouseUp(button=btn)
+            except Exception:
+                pass
+    except Exception:
+        pass
     running = False
     save_log()
     sys.exit(0)
@@ -188,7 +272,9 @@ def check_environment():
 
     print()
     print("╔══════════════════════════════════════════════════════╗")
-    print("║   🪟 AI-Агент: Qwen3.8-27B Vision + Reasoning     ║")
+    print("║   🪟 AI-Агент (расширенная версия)                 ║")
+    print("║   • Drag & Drop   • Любые клавиши                  ║")
+    print("║   • Комбинации    • Удержание                      ║")
     print("╚══════════════════════════════════════════════════════╝")
     print()
 
@@ -209,20 +295,14 @@ def check_environment():
         except Exception:
             pass
 
-    # Тест модели с изображением
-    log("Проверяю Vision + Reasoning...")
+    log("Проверяю API...")
     try:
         test_payload = {
             "model": MODEL_NAME,
             "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "What color is this text: RED?"}
-                    ]
-                }
+                {"role": "user", "content": [{"type": "text", "text": "Hi"}]}
             ],
-            "max_tokens": 50
+            "max_tokens": 5
         }
         if ENABLE_REASONING:
             test_payload["reasoning"] = {"enabled": True}
@@ -241,9 +321,6 @@ def check_environment():
 
         if r.status_code == 200:
             log(f"API работает ✓", "SUCCESS")
-            data = r.json()
-            if "reasoning_details" in data["choices"][0]["message"]:
-                log(f"Reasoning поддерживается ✓", "SUCCESS")
         elif r.status_code == 401:
             log("Неверный API ключ!", "ERROR")
             return False
@@ -272,7 +349,7 @@ def check_environment():
 
     print()
     log(f"Модель: {MODEL_NAME}")
-    log(f"Reasoning: {'ON (effort={REASONING_EFFORT})' if ENABLE_REASONING else 'OFF'}")
+    log(f"Reasoning: {'ON (effort=' + REASONING_EFFORT + ')' if ENABLE_REASONING else 'OFF'}")
     log(f"Скриншот: {SCREEN_WIDTH}px")
     log(f"Максимум шагов: {MAX_STEPS}")
     print()
@@ -324,38 +401,63 @@ def screen_changed(new_screenshot):
 
 
 # ───────────────────────────────────────────────────────
-#      ПРОМПТЫ ДЛЯ QWEN3.8 (VISION + REASONING)
+#      ПРОМПТЫ (расширенные)
 # ───────────────────────────────────────────────────────
 
 def build_system_prompt():
-    return """You are an expert desktop computer control agent with advanced vision and reasoning capabilities. You can see screenshots and must complete tasks step by step with pixel-perfect precision.
+    return """You are an expert desktop computer control agent with advanced vision, reasoning, and full keyboard/mouse control capabilities.
 
 Your capabilities:
-- Analyze screenshots with high accuracy
+- Analyze screenshots with pixel-perfect precision
 - Reason about UI elements and their locations
 - Plan multi-step actions
 - Track progress through conversation history
+- Full mouse control: click, double-click, right-click, DRAG & DROP
+- Full keyboard control: any key, any combination, key hold/release
 
 Available actions:
-- click(x, y): Left-click at pixel coordinates
+- click(x, y): Left-click
 - right_click(x, y): Right-click
 - double_click(x, y): Double-click
+- drag(x, y, to_x, to_y, button="left", duration=0.5): Drag from (x,y) to (to_x,to_y) with mouse button held down. Use for: moving windows, selecting text, moving files, drawing, sliders
+- mouse_down(x, y, button="left"): Press and HOLD mouse button at coordinates
+- mouse_up(x, y, button="left"): Release mouse button at coordinates
 - type_text(text): Type into focused field
-- press_key(key): Press single key (enter, escape, tab, backspace, delete, space, up, down, left, right, home, end, f1-f12)
-- hotkey(keys): Key combination (ctrl+c, ctrl+v, ctrl+z, ctrl+a, alt+tab, win+d, alt+f4, ctrl+shift+escape)
-- scroll_down / scroll_up: Scroll page
+- press_key(key): Press any single key
+- hotkey(keys): Press key combination (e.g., ctrl+shift+alt+f12)
+- key_down(key): Press and HOLD a key (useful for holding shift while clicking)
+- key_up(key): Release a held key
+- scroll_down / scroll_up / scroll_left / scroll_right: Scroll
 - wait: Wait for updates
 - finish(reason): Task complete
 
-CRITICAL RULES:
-1. Look at the screenshot VERY carefully - identify exact pixel positions
-2. Coordinates MUST be within screenshot dimensions
-3. Aim for EXACT CENTER of target elements (buttons, icons, fields)
-4. Output only ONE action per response
-5. Use reasoning to plan your next step
-6. On Windows use ctrl (not cmd), win for Windows key
-7. If stuck or task impossible, use finish with explanation
-8. Be extremely precise - pixels matter!"""
+ALL SUPPORTED KEYS (use exact names):
+Letters: a-z
+Numbers: 0-9, numpad0-numpad9
+Function: f1-f24
+Arrows: up, down, left, right
+Modifiers: ctrl, shift, alt, win
+Special: enter, return, escape, tab, backspace, delete, insert, space
+Navigation: home, end, pageup, pagedown, printscreen, scrolllock, pause, capslock, numlock
+Media: volumeup, volumedown, volumemute, playpause, nexttrack, prevtrack
+Punctuation: minus, equals, leftbracket, rightbracket, backslash, semicolon, apostrophe, comma, period, slash
+
+DRAG & DROP RULES:
+1. (x, y) is where you CLICK AND HOLD (start point - the object to drag)
+2. (to_x, to_y) is where you RELEASE (destination)
+3. Use duration 0.3-1.0 for smooth movement
+4. Use button="left" for most operations, "right" for right-drag
+
+KEY COMBINATION RULES:
+- Use "+" to combine keys: ctrl+shift+a, ctrl+alt+delete, win+shift+s
+- Maximum 5 keys in one combination
+
+CRITICAL:
+1. Coordinates MUST be within screenshot dimensions
+2. Aim for EXACT CENTER of target elements
+3. Output only ONE action per response
+4. On Windows use ctrl (not cmd), win for Windows key
+5. Be precise - pixels matter!"""
 
 
 def build_user_prompt(task, step, img_w, img_h, action_history_text):
@@ -365,59 +467,53 @@ TASK: {task}
 STEP: {step} of {MAX_STEPS}
 PREVIOUS ACTIONS: {action_history_text if action_history_text else "none"}
 
-Think step by step using your reasoning capabilities:
+Think step by step:
 1. What do you see in the screenshot?
 2. What is the current state of the task?
 3. What specific element do you need to interact with?
 4. What are its EXACT pixel coordinates?
 5. What is the best next action?
 
-Respond ONLY with valid JSON:
-{{
-  "thought": "Step-by-step reasoning about what I see and what to do next",
-  "action": "click",
-  "x": 500,
-  "y": 300,
-  "text": ""
-}}
+Respond ONLY with valid JSON examples:
 
-For type_text: {{"thought":"...", "action":"type_text", "x":0, "y":0, "text":"hello"}}
-For press_key: {{"thought":"...", "action":"press_key", "x":0, "y":0, "text":"enter"}}
-For hotkey: {{"thought":"...", "action":"hotkey", "x":0, "y":0, "text":"ctrl+c"}}
-For finish: {{"thought":"Task complete because...", "action":"finish", "x":0, "y":0, "text":"", "reason":"done"}}
+{{"thought":"...", "action":"click", "x":500, "y":300, "text":""}}
+{{"thought":"...", "action":"drag", "x":100, "y":200, "to_x":500, "to_y":400, "text":"left"}}
+{{"thought":"...", "action":"mouse_down", "x":100, "y":200, "text":"left"}}
+{{"thought":"...", "action":"mouse_up", "x":500, "y":400, "text":"left"}}
+{{"thought":"...", "action":"type_text", "x":0, "y":0, "text":"hello world"}}
+{{"thought":"...", "action":"press_key", "x":0, "y":0, "text":"f5"}}
+{{"thought":"...", "action":"press_key", "x":0, "y":0, "text":"numpad5"}}
+{{"thought":"...", "action":"hotkey", "x":0, "y":0, "text":"ctrl+shift+alt+f12"}}
+{{"thought":"...", "action":"hotkey", "x":0, "y":0, "text":"win+shift+s"}}
+{{"thought":"...", "action":"key_down", "x":0, "y":0, "text":"shift"}}
+{{"thought":"...", "action":"key_up", "x":0, "y":0, "text":"shift"}}
+{{"thought":"...", "action":"scroll_down", "x":0, "y":0, "text":""}}
+{{"thought":"Task complete", "action":"finish", "x":0, "y":0, "text":"", "reason":"done"}}
+
+Note: For drag/mouse_down/mouse_up, the 'text' field holds the button name: "left", "right", or "middle".
+For press_key/hotkey/key_down/key_up, the 'text' field holds the key name(s).
 
 JSON only, no markdown."""
 
 
 # ───────────────────────────────────────────────────────
-#       ЗАПРОС К QWEN3.8 С REASONING CONTINUITY
+#       ЗАПРОС К МОДЕЛИ С REASONING CONTINUITY
 # ───────────────────────────────────────────────────────
 
 def ask_agent(task, image_b64, step, action_history_text, img_w, img_h):
-    """
-    Запрос к Qwen3.8 с сохранением reasoning_details между шагами
-    для непрерывности мышления модели.
-    """
     global conversation_history
 
-    # Инициализируем разговор при первом шаге новой задачи
     if step == 1 or not conversation_history:
         conversation_history = [
-            {
-                "role": "system",
-                "content": build_system_prompt()
-            }
+            {"role": "system", "content": build_system_prompt()}
         ]
 
-    # Формируем сообщение пользователя со скриншотом
     user_message = {
         "role": "user",
         "content": [
             {
                 "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{image_b64}"
-                }
+                "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}
             },
             {
                 "type": "text",
@@ -426,10 +522,8 @@ def ask_agent(task, image_b64, step, action_history_text, img_w, img_h):
         ]
     }
 
-    # Добавляем в историю
     conversation_history.append(user_message)
 
-    # Ограничиваем размер истории (сохраняем system + последние N сообщений)
     if len(conversation_history) > 2 + MAX_HISTORY * 2:
         conversation_history = [conversation_history[0]] + conversation_history[-(MAX_HISTORY * 2):]
 
@@ -440,7 +534,6 @@ def ask_agent(task, image_b64, step, action_history_text, img_w, img_h):
         "temperature": 0.1
     }
 
-    # Включаем reasoning для Qwen3.8
     if ENABLE_REASONING:
         payload["reasoning"] = {
             "enabled": True,
@@ -467,7 +560,6 @@ def ask_agent(task, image_b64, step, action_history_text, img_w, img_h):
             if response.status_code == 200:
                 data = response.json()
 
-                # Считаем стоимость
                 usage = data.get("usage", {})
                 if "cost" in usage:
                     cost = usage["cost"]
@@ -476,16 +568,13 @@ def ask_agent(task, image_b64, step, action_history_text, img_w, img_h):
                     log(f"Токены: {usage.get('prompt_tokens', 0)} in / {usage.get('completion_tokens', 0)} out | ${cost:.6f}",
                         "API")
 
-                # Извлекаем ответ модели
                 choice = data["choices"][0]
                 message = choice["message"]
                 content = message.get("content", "").strip()
 
-                # Извлекаем reasoning_details для сохранения
                 reasoning_details = message.get("reasoning_details")
                 reasoning = message.get("reasoning")
 
-                # Логируем процесс рассуждения
                 if reasoning_details:
                     if isinstance(reasoning_details, list):
                         for r in reasoning_details:
@@ -499,12 +588,7 @@ def ask_agent(task, image_b64, step, action_history_text, img_w, img_h):
                     if isinstance(reasoning, str):
                         log(f"💭 {reasoning[:300]}", "REASONING")
 
-                # Сохраняем ответ модели в историю (С reasoning_details!)
-                assistant_message = {
-                    "role": "assistant",
-                    "content": content
-                }
-                # Передаём reasoning_details БЕЗ ИЗМЕНЕНИЙ для continuity
+                assistant_message = {"role": "assistant", "content": content}
                 if reasoning_details:
                     assistant_message["reasoning_details"] = reasoning_details
                 elif reasoning:
@@ -512,7 +596,6 @@ def ask_agent(task, image_b64, step, action_history_text, img_w, img_h):
 
                 conversation_history.append(assistant_message)
 
-                # Извлекаем JSON из content
                 start = content.find('{')
                 end = content.rfind('}') + 1
 
@@ -532,13 +615,20 @@ def ask_agent(task, image_b64, step, action_history_text, img_w, img_h):
                     log(f"Content: {content[:300]}", "DEBUG")
 
             elif response.status_code == 429:
-                log("Rate limit. Жду 5с...", "WARN")
-                time.sleep(5)
+                retry_after = response.headers.get("Retry-After")
+                if retry_after and retry_after.isdigit():
+                    wait_time = int(retry_after)
+                else:
+                    wait_time = min(30 * (2 ** attempt), 120)
+                log(f"⚠ Rate limit! Жду {wait_time}с...", "WARN")
+                for i in range(wait_time, 0, -1):
+                    print(f"    ⏳ {i}с... ", end="\r")
+                    time.sleep(1)
+                print()
                 continue
             elif response.status_code == 400:
                 error_text = response.text[:300]
                 log(f"Bad request: {error_text}", "ERROR")
-                # Если ошибка связана с reasoning, пробуем без него
                 if "reasoning" in error_text.lower():
                     log("Повторяю без reasoning...", "WARN")
                     payload.pop("reasoning", None)
@@ -574,14 +664,12 @@ def verify_coordinates(x, y, img_w, img_h):
 
     x, y = float(x), float(y)
 
-    # Нормализованные (0-1000)?
     if 0 <= x <= 1000 and 0 <= y <= 1000 and (x > img_w or y > img_h):
         nx = x / 1000.0 * img_w
         ny = y / 1000.0 * img_h
         log(f"Нормализовано (0-1000): ({nx:.0f},{ny:.0f})", "DEBUG")
         return int(nx), int(ny), "нормализовано"
 
-    # Проценты (0-1)?
     if 0 <= x <= 1 and 0 <= y <= 1:
         px = x * img_w
         py = y * img_h
@@ -605,26 +693,33 @@ def execute_action(action_data, scale_x, scale_y, img_w, img_h, full_screenshot)
 
     action = action_data.get("action", "").lower().strip()
 
+    def resolve_key(key_name):
+        key_name = key_name.lower().strip()
+        return KEY_ALIASES.get(key_name, key_name)
+
+    def to_screen_coords(x, y):
+        vx, vy, status = verify_coordinates(x, y, img_w, img_h)
+        if vx is None:
+            return None, None
+        if status != "OK":
+            log(f"Скорректированы: {status}", "WARN")
+        real_x = int(vx * scale_x)
+        real_y = int(vy * scale_y)
+        real_x = max(0, min(real_x, REAL_W - 1))
+        real_y = max(0, min(real_y, REAL_H - 1))
+        return real_x, real_y
+
     try:
         # ── КЛИКИ ──
         if action in ("click", "right_click", "double_click", "left_click"):
             raw_x = action_data.get("x", 0)
             raw_y = action_data.get("y", 0)
 
-            vx, vy, status = verify_coordinates(raw_x, raw_y, img_w, img_h)
-            if vx is None:
-                log(f"Некорректные координаты: {raw_x}, {raw_y}", "ERROR")
+            real_x, real_y = to_screen_coords(raw_x, raw_y)
+            if real_x is None:
                 return None
 
-            if status != "OK":
-                log(f"Скорректированы: {status}", "WARN")
-
-            real_x = int(vx * scale_x)
-            real_y = int(vy * scale_y)
-            real_x = max(0, min(real_x, REAL_W - 1))
-            real_y = max(0, min(real_y, REAL_H - 1))
-
-            log(f"🎯 ({vx},{vy}) → ({real_x},{real_y})")
+            log(f"🎯 ({raw_x},{raw_y}) → ({real_x},{real_y})")
 
             if DEBUG:
                 save_debug_screenshot(full_screenshot.copy(), real_x, real_y, action, f"step{step_counter}")
@@ -659,6 +754,106 @@ def execute_action(action_data, scale_x, scale_y, img_w, img_h, full_screenshot)
             log(f"✓ {desc}", "SUCCESS")
             return desc
 
+        # ── DRAG & DROP ──
+        elif action == "drag":
+            raw_x = action_data.get("x", 0)
+            raw_y = action_data.get("y", 0)
+            raw_to_x = action_data.get("to_x", action_data.get("x2", 0))
+            raw_to_y = action_data.get("to_y", action_data.get("y2", 0))
+            button = action_data.get("text", action_data.get("button", "left")).lower()
+            duration = float(action_data.get("duration", 0.5))
+
+            if button not in ("left", "right", "middle"):
+                button = "left"
+
+            start_x, start_y = to_screen_coords(raw_x, raw_y)
+            if start_x is None:
+                return None
+
+            end_x, end_y = to_screen_coords(raw_to_x, raw_to_y)
+            if end_x is None:
+                return None
+
+            log(f"🎯 Drag: ({start_x},{start_y}) → ({end_x},{end_y}) [{button}]")
+
+            if DEBUG:
+                debug_img = full_screenshot.copy()
+                draw = ImageDraw.Draw(debug_img)
+                r = 15
+                draw.ellipse([start_x - r, start_y - r, start_x + r, start_y + r], outline="blue", width=3)
+                draw.text((start_x + 20, start_y - 10), f"FROM ({start_x},{start_y})", fill="blue")
+                draw.ellipse([end_x - r, end_y - r, end_x + r, end_y + r], outline="red", width=3)
+                draw.text((end_x + 20, end_y - 10), f"TO ({end_x},{end_y})", fill="red")
+                draw.line([start_x, start_y, end_x, end_y], fill="purple", width=2)
+
+                os.makedirs(DEBUG_DIR, exist_ok=True)
+                filename = f"{step_counter:03d}_drag.png"
+                debug_img.save(os.path.join(DEBUG_DIR, filename))
+                log(f"📷 Drag визуализация сохранена", "DEBUG")
+
+            if CLICK_DELAY > 0:
+                log(f"Drag через {CLICK_DELAY}с (Ctrl+C = отмена)")
+                for i in range(CLICK_DELAY, 0, -1):
+                    if not running:
+                        return None
+                    print(f"    {i}...", end="\r")
+                    time.sleep(1)
+                print("    " + " " * 20, end="\r")
+
+            pyautogui.moveTo(start_x, start_y, duration=MOUSE_SPEED)
+            time.sleep(0.1)
+
+            dx = end_x - start_x
+            dy = end_y - start_y
+            pyautogui.drag(dx, dy, duration=duration, button=button)
+
+            desc = f"drag({start_x},{start_y}→{end_x},{end_y},{button})"
+            log(f"✓ {desc}", "SUCCESS")
+            return desc
+
+        # ── MOUSE DOWN / UP ──
+        elif action == "mouse_down":
+            raw_x = action_data.get("x", 0)
+            raw_y = action_data.get("y", 0)
+            button = action_data.get("text", action_data.get("button", "left")).lower()
+            if button not in ("left", "right", "middle"):
+                button = "left"
+
+            real_x, real_y = to_screen_coords(raw_x, raw_y)
+            if real_x is None:
+                return None
+
+            log(f"🎯 Mouse DOWN: ({real_x},{real_y}) [{button}]")
+
+            pyautogui.moveTo(real_x, real_y, duration=MOUSE_SPEED)
+            time.sleep(0.1)
+            pyautogui.mouseDown(button=button)
+
+            desc = f"mouse_down({real_x},{real_y},{button})"
+            log(f"✓ {desc} (удерживаю)", "SUCCESS")
+            return desc
+
+        elif action == "mouse_up":
+            raw_x = action_data.get("x", 0)
+            raw_y = action_data.get("y", 0)
+            button = action_data.get("text", action_data.get("button", "left")).lower()
+            if button not in ("left", "right", "middle"):
+                button = "left"
+
+            real_x, real_y = to_screen_coords(raw_x, raw_y)
+            if real_x is None:
+                return None
+
+            log(f"🎯 Mouse UP: ({real_x},{real_y}) [{button}]")
+
+            pyautogui.moveTo(real_x, real_y, duration=MOUSE_SPEED)
+            time.sleep(0.1)
+            pyautogui.mouseUp(button=button)
+
+            desc = f"mouse_up({real_x},{real_y},{button})"
+            log(f"✓ {desc}", "SUCCESS")
+            return desc
+
         # ── ТЕКСТ ──
         elif action == "type_text":
             text = action_data.get("text", "")
@@ -682,41 +877,72 @@ def execute_action(action_data, scale_x, scale_y, img_w, img_h, full_screenshot)
 
             return f"type('{text}')"
 
-        # ── КЛАВИША ──
+        # ── ОДИНАРНАЯ КЛАВИША ──
         elif action == "press_key":
-            key = action_data.get("text", action_data.get("key", ""))
-            if not key:
+            key_raw = action_data.get("text", action_data.get("key", ""))
+            if not key_raw:
                 return None
-            key = key.lower().strip()
-            key_map = {
-                "enter": "enter", "return": "enter", "esc": "escape",
-                "tab": "tab", "backspace": "backspace",
-                "delete": "delete", "del": "delete", "space": "space",
-                "up": "up", "down": "down", "left": "left", "right": "right",
-                "home": "home", "end": "end",
-                "pageup": "pageup", "pagedown": "pagedown",
-            }
-            key = key_map.get(key, key)
-            log(f"⌨ {key}")
-            pyautogui.press(key)
-            return f"press({key})"
+            key = resolve_key(key_raw)
+            log(f"⌨ press({key})")
+            try:
+                pyautogui.press(key)
+                return f"press({key})"
+            except Exception as e:
+                log(f"Клавиша '{key}' не поддерживается: {e}", "ERROR")
+                return None
 
         # ── ГОРЯЧИЕ КЛАВИШИ ──
         elif action == "hotkey":
             keys_str = action_data.get("text", action_data.get("keys", ""))
             if not keys_str:
                 return None
-            keys_str = keys_str.lower()
+
             if sys.platform == "darwin":
                 keys_str = keys_str.replace("ctrl", "command").replace("win", "command")
             else:
                 keys_str = keys_str.replace("command", "ctrl").replace("cmd", "ctrl")
                 keys_str = keys_str.replace("super", "win").replace("option", "alt")
 
-            log(f"⌨ {keys_str}")
-            key_list = [k.strip() for k in keys_str.split("+")]
-            pyautogui.hotkey(*key_list)
-            return f"hotkey({keys_str})"
+            raw_keys = [k.strip() for k in keys_str.split("+")]
+            resolved_keys = [resolve_key(k) for k in raw_keys if k]
+
+            if not resolved_keys:
+                return None
+
+            log(f"⌨ hotkey({' + '.join(resolved_keys)})")
+            try:
+                pyautogui.hotkey(*resolved_keys)
+                return f"hotkey({' + '.join(resolved_keys)})"
+            except Exception as e:
+                log(f"Комбинация не поддерживается: {e}", "ERROR")
+                return None
+
+        # ── KEY DOWN / KEY UP ──
+        elif action == "key_down":
+            key_raw = action_data.get("text", action_data.get("key", ""))
+            if not key_raw:
+                return None
+            key = resolve_key(key_raw)
+            log(f"⌨ key_down({key}) — удерживаю")
+            try:
+                pyautogui.keyDown(key)
+                return f"key_down({key})"
+            except Exception as e:
+                log(f"Клавиша не поддерживается: {e}", "ERROR")
+                return None
+
+        elif action == "key_up":
+            key_raw = action_data.get("text", action_data.get("key", ""))
+            if not key_raw:
+                return None
+            key = resolve_key(key_raw)
+            log(f"⌨ key_up({key}) — отпускаю")
+            try:
+                pyautogui.keyUp(key)
+                return f"key_up({key})"
+            except Exception as e:
+                log(f"Клавиша не поддерживается: {e}", "ERROR")
+                return None
 
         # ── СКРОЛЛ ──
         elif action == "scroll_down":
@@ -727,12 +953,27 @@ def execute_action(action_data, scale_x, scale_y, img_w, img_h, full_screenshot)
             log("📜 ↑")
             pyautogui.scroll(5)
             return "scroll_up"
+        elif action == "scroll_left":
+            log("📜 ←")
+            try:
+                pyautogui.hscroll(-5)
+            except AttributeError:
+                pyautogui.scroll(-5)
+            return "scroll_left"
+        elif action == "scroll_right":
+            log("📜 →")
+            try:
+                pyautogui.hscroll(5)
+            except AttributeError:
+                pyautogui.scroll(5)
+            return "scroll_right"
 
         # ── ОЖИДАНИЕ ──
         elif action == "wait":
-            log("⏳ 2с")
-            time.sleep(2)
-            return "wait"
+            duration = float(action_data.get("duration", action_data.get("text", 2)))
+            log(f"⏳ {duration}с")
+            time.sleep(duration)
+            return f"wait({duration}s)"
 
         # ── ЗАВЕРШЕНИЕ ──
         elif action == "finish":
@@ -748,6 +989,8 @@ def execute_action(action_data, scale_x, scale_y, img_w, img_h, full_screenshot)
         raise
     except Exception as e:
         log(f"Ошибка: {e}", "ERROR")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -760,7 +1003,7 @@ def run_agent(task):
 
     action_history = []
     step_counter = 0
-    conversation_history = []  # Сбрасываем разговор для новой задачи
+    conversation_history = []
     start_cost = total_cost
 
     log(f"🚀 Задача: '{task}'")
@@ -827,6 +1070,21 @@ def run_agent(task):
     else:
         log(f"⚠ Лимит {MAX_STEPS} шагов", "WARN")
 
+    # Безопасное отпускание всех клавиш/кнопок после задачи
+    try:
+        for key in ["ctrl", "shift", "alt", "win", "command"]:
+            try:
+                pyautogui.keyUp(key)
+            except Exception:
+                pass
+        for btn in ["left", "right", "middle"]:
+            try:
+                pyautogui.mouseUp(button=btn)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     print()
     print("═" * 60)
     log("📋 Итог:")
@@ -855,17 +1113,19 @@ def run_agent(task):
 def show_menu():
     print()
     print("╔══════════════════════════════════════════════════════╗")
-    print("║   🪟 AI-Агент: Qwen3.8-27B Vision + Reasoning    ║")
+    print("║   🪟 AI-Агент (расширенная версия)                 ║")
     print("╠══════════════════════════════════════════════════════╣")
     print("║  1. Ввести задачу вручную                          ║")
     print("║  2. Пример: Открыть Калькулятор                    ║")
     print("║  3. Пример: Открыть Блокнот и написать текст       ║")
-    print("║  4. Пример: Открыть Проводник                      ║")
-    print("║  5. Пример: Открыть браузер                        ║")
-    print("║  6. Пример: Свернуть все окна                      ║")
-    print("║  7. Настройки reasoning                            ║")
-    print("║  8. Настройки агента                               ║")
-    print("║  9. Выход                                          ║")
+    print("║  4. Пример: Выделить текст мышью (drag)            ║")
+    print("║  5. Пример: Выделить всё (Ctrl+A)                  ║")
+    print("║  6. Пример: Скриншот области (Win+Shift+S)         ║")
+    print("║  7. Пример: Открыть Диспетчер задач                ║")
+    print("║  8. Пример: Свёрнуть все окна (Win+D)              ║")
+    print("║  9. Настройки reasoning                            ║")
+    print("║ 10. Настройки агента                               ║")
+    print("║ 11. Выход                                          ║")
     print("╚══════════════════════════════════════════════════════╝")
 
 
@@ -891,15 +1151,19 @@ def main():
         elif choice == "2":
             run_agent("Open Calculator")
         elif choice == "3":
-            run_agent("Open Notepad, type 'Hello from AI Agent', save as test.txt")
+            run_agent("Open Notepad, type 'Hello from AI Agent'")
         elif choice == "4":
-            run_agent("Open File Explorer and go to Desktop")
+            run_agent("Select the text on the screen by dragging the mouse over it from left to right")
         elif choice == "5":
-            run_agent("Open Chrome and go to google.com")
+            run_agent("Open Notepad, type some text, then select all with Ctrl+A")
         elif choice == "6":
-            run_agent("Minimize all windows with Win+D")
-
+            run_agent("Take a screenshot of a selected area using the Windows shortcut Win+Shift+S")
         elif choice == "7":
+            run_agent("Open Task Manager using Ctrl+Shift+Escape")
+        elif choice == "8":
+            run_agent("Minimize all windows using Win+D")
+
+        elif choice == "9":
             print(f"\n  Reasoning: {'ON' if ENABLE_REASONING else 'OFF'}")
             print(f"  Effort: {REASONING_EFFORT}")
 
@@ -916,7 +1180,7 @@ def main():
                     REASONING_EFFORT = effort
                 log(f"Reasoning effort: {REASONING_EFFORT}")
 
-        elif choice == "8":
+        elif choice == "10":
             print(f"\n  Модель: {MODEL_NAME}")
             print(f"  Скриншот: {SCREEN_WIDTH}px")
             print(f"  Задержка: {CLICK_DELAY}с")
@@ -930,7 +1194,11 @@ def main():
             if d.isdigit():
                 globals()["CLICK_DELAY"] = int(d)
 
-        elif choice == "9":
+            m = input(f"  Модель [{MODEL_NAME}]: ").strip()
+            if m:
+                globals()["MODEL_NAME"] = m
+
+        elif choice == "11":
             log("Выход")
             save_log()
             print(f"\n  💰 Всего: ${total_cost:.6f}")
