@@ -48,7 +48,7 @@ if sys.platform == "win32":
 #                     НАСТРОЙКИ
 # ═══════════════════════════════════════════════════════
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 HTTP_REFERRER = "http://localhost:8080"
 APP_TITLE = "AI-Agent-Qwen3.8"
