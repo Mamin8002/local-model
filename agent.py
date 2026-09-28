@@ -7,6 +7,8 @@ AI-Агент через OpenRouter API с расширенными возмож
 - Модели: Qwen3.8-27B, Gemini, Claude, GPT-4o
 """
 
+import ctypes
+from ctypes import wintypes
 import requests
 import pyautogui
 import base64
@@ -72,6 +74,8 @@ WAIT_AFTER = 1.5
 MAX_RETRIES = 2
 TIMEOUT = 90
 MAX_HISTORY = 100
+
+SCROLL_PIXELS_PER_CLICK = 50  # Сколько пикселей прокручивает 1 клик колеса
 
 # ── Отладка ──
 SAVE_LOG = True
@@ -420,17 +424,28 @@ Available actions:
 - click(x, y): Left-click
 - right_click(x, y): Right-click
 - double_click(x, y): Double-click
-- drag(x, y, to_x, to_y, button="left", duration=0.5): Drag from (x,y) to (to_x,to_y) with mouse button held down. Use for: moving windows, selecting text, moving files, drawing, sliders
-- mouse_down(x, y, button="left"): Press and HOLD mouse button at coordinates
-- mouse_up(x, y, button="left"): Release mouse button at coordinates
+- drag(x, y, to_x, to_y, button="left", duration=0.5): Drag from (x,y) to (to_x,to_y)
+- mouse_down(x, y, button="left"): Press and HOLD mouse button
+- mouse_up(x, y, button="left"): Release mouse button
 - type_text(text): Type into focused field
 - press_key(key): Press any single key
 - hotkey(keys): Press key combination (e.g., ctrl+shift+alt+f12)
-- key_down(key): Press and HOLD a key (useful for holding shift while clicking)
+- key_down(key): Press and HOLD a key
 - key_up(key): Release a held key
-- scroll_down / scroll_up / scroll_left / scroll_right: Scroll
+- scroll_percent(percent, direction, x, y): Scroll by percentage of screen. percent=1-100, direction="up"/"down"/"left"/"right"
+- scroll_down(x, y, clicks=3): Scroll DOWN at coordinates (small precise scrolling)
+- scroll_up(x, y, clicks=3): Scroll UP at coordinates
+- scroll_left(x, y, clicks=3): Scroll LEFT
+- scroll_right(x, y, clicks=3): Scroll RIGHT
 - wait: Wait for updates
 - finish(reason): Task complete
+
+SCROLL RULES (CRITICAL):
+1. For LARGE scrolling (half screen or more): use scroll_percent with percent 50-80
+2. For SMALL scrolling (a few lines): use scroll_down/scroll_up with clicks 1-3
+3. scroll_percent example: {{"action":"scroll_percent", "percent":70, "direction":"down", "x":640, "y":400}}
+4. Always specify coordinates in the CENTER of the content area
+5. Do NOT use large clicks values (more than 5) with scroll_down/up - use scroll_percent instead
 
 ALL SUPPORTED KEYS (use exact names):
 Letters: a-z
@@ -488,7 +503,8 @@ Respond ONLY with valid JSON examples:
 {{"thought":"...", "action":"hotkey", "x":0, "y":0, "text":"win+shift+s"}}
 {{"thought":"...", "action":"key_down", "x":0, "y":0, "text":"shift"}}
 {{"thought":"...", "action":"key_up", "x":0, "y":0, "text":"shift"}}
-{{"thought":"...", "action":"scroll_down", "x":0, "y":0, "text":""}}
+{{"thought":"...", "action":"scroll_down", "x":640, "y":400, "text":"3"}}
+{{"thought":"...", "action":"scroll_up", "x":640, "y":400, "text":"5"}}
 {{"thought":"Task complete", "action":"finish", "x":0, "y":0, "text":"", "reason":"done"}}
 
 Note: For drag/mouse_down/mouse_up, the 'text' field holds the button name: "left", "right", or "middle".
@@ -693,6 +709,178 @@ def execute_action(action_data, scale_x, scale_y, img_w, img_h, full_screenshot)
         return None
 
     action = action_data.get("action", "").lower().strip()
+
+    def calculate_clicks_from_percent(percent, direction="vertical"):
+        """
+        Вычисляет количество кликов колеса для прокрутки на заданный процент экрана.
+
+        Args:
+            percent: процент экрана (0-100)
+            direction: "vertical" или "horizontal"
+
+        Returns:
+            количество кликов колеса (1-50)
+        """
+        # Определяем размер экрана в нужном направлении
+        screen_size = REAL_H if direction == "vertical" else REAL_W
+
+        # Сколько пикселей нужно прокрутить
+        target_pixels = (percent / 100.0) * screen_size
+
+        # Сколько кликов колеса нужно
+        clicks = target_pixels / SCROLL_PIXELS_PER_CLICK
+
+        # Округляем и ограничиваем
+        clicks = max(1, min(int(round(clicks)), 50))
+
+        return clicks
+
+    def scroll_at_point(x, y, clicks, direction="down"):
+        """
+        Надёжная прокрутка с использованием 4 методов по приоритету:
+        1. pynput (самый надёжный)
+        2. Win32 SendInput
+        3. pyautogui
+        4. Клавиши PageUp/PageDown/стрелки (работает везде)
+        """
+        x = max(0, min(int(x), REAL_W - 1))
+        y = max(0, min(int(y), REAL_H - 1))
+        clicks = max(1, min(int(clicks), 20))
+
+        log(f"📜 {direction} на {clicks} кликов в точке ({x},{y})", "DEBUG")
+
+        # ШАГ 1: Двигаем мышь в нужную точку (без клика, чтобы не сломать интерфейс)
+        pyautogui.moveTo(x, y, duration=MOUSE_SPEED)
+        time.sleep(0.15)
+
+        # Определяем направление
+        dy = -clicks if direction == "down" else clicks
+        dx = -clicks if direction == "left" else clicks
+        is_horizontal = direction in ("left", "right")
+
+        # ── МЕТОД 1: pynput (лучший) ──
+        try:
+            from pynput.mouse import Controller as MouseController
+            mouse = MouseController()
+            mouse.position = (x, y)
+            time.sleep(0.1)
+
+            if is_horizontal:
+                # Горизонтальный скролл через Shift + Wheel
+                pyautogui.keyDown('shift')
+                mouse.scroll(dx, 0)
+                pyautogui.keyUp('shift')
+            else:
+                mouse.scroll(0, dy)
+
+            time.sleep(0.2)
+            log(f"✓ Метод 1 (pynput) сработал", "SUCCESS")
+            return True
+        except ImportError:
+            log("pynput не установлен, пробую следующий метод", "DEBUG")
+        except Exception as e:
+            log(f"pynput failed: {e}", "DEBUG")
+
+        # ── МЕТОД 2: Win32 SendInput ──
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                INPUT_MOUSE = 0
+                MOUSEEVENTF_WHEEL = 0x0800
+                MOUSEEVENTF_HWHEEL = 0x1000
+                WHEEL_DELTA = 120
+
+                class MOUSEINPUT(ctypes.Structure):
+                    _fields_ = [
+                        ("dx", wintypes.LONG),
+                        ("dy", wintypes.LONG),
+                        ("mouseData", wintypes.DWORD),
+                        ("dwFlags", wintypes.DWORD),
+                        ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+                    ]
+
+                class INPUT_UNION(ctypes.Union):
+                    _fields_ = [("mi", MOUSEINPUT)]
+
+                class INPUT(ctypes.Structure):
+                    _fields_ = [
+                        ("type", wintypes.DWORD),
+                        ("union", INPUT_UNION),
+                    ]
+
+                wheel_delta = (dy if not is_horizontal else dx) * WHEEL_DELTA
+
+                inp = INPUT()
+                inp.type = INPUT_MOUSE
+                inp.union.mi.dwFlags = MOUSEEVENTF_HWHEEL if is_horizontal else MOUSEEVENTF_WHEEL
+                inp.union.mi.mouseData = wheel_delta & 0xFFFFFFFF
+
+                # Несколько событий подряд для надёжности
+                for _ in range(clicks):
+                    result = ctypes.windll.user32.SendInput(
+                        1, ctypes.byref(inp), ctypes.sizeof(INPUT)
+                    )
+                    if result == 0:
+                        raise Exception(f"SendInput failed, error={ctypes.get_last_error()}")
+                    time.sleep(0.03)
+
+                log(f"✓ Метод 2 (SendInput) сработал", "SUCCESS")
+                return True
+            except Exception as e:
+                log(f"SendInput failed: {e}", "DEBUG")
+
+        # ── МЕТОД 3: pyautogui (запасной) ──
+        try:
+            amount = dy if not is_horizontal else dx
+            if is_horizontal:
+                try:
+                    pyautogui.hscroll(amount)
+                except AttributeError:
+                    pyautogui.scroll(amount)
+            else:
+                pyautogui.scroll(amount)
+            log(f"✓ Метод 3 (pyautogui) сработал", "SUCCESS")
+            return True
+        except Exception as e:
+            log(f"pyautogui failed: {e}", "DEBUG")
+
+        # ── МЕТОД 4: Клавиши (работает почти везде) ──
+        try:
+            log("Fallback на клавиши", "DEBUG")
+
+            # Сначала кликаем, чтобы окно получило фокус
+            pyautogui.click()
+            time.sleep(0.1)
+
+            if direction == "down":
+                for _ in range(min(clicks, 10)):
+                    pyautogui.press("pagedown")
+                    time.sleep(0.05)
+            elif direction == "up":
+                for _ in range(min(clicks, 10)):
+                    pyautogui.press("pageup")
+                    time.sleep(0.05)
+            elif direction == "left":
+                for _ in range(min(clicks * 3, 30)):
+                    pyautogui.press("left")
+                    time.sleep(0.02)
+            elif direction == "right":
+                for _ in range(min(clicks * 3, 30)):
+                    pyautogui.press("right")
+                    time.sleep(0.02)
+
+            log(f"✓ Метод 4 (клавиши) сработал", "SUCCESS")
+            return True
+        except Exception as e:
+            log(f"Клавиши тоже не сработали: {e}", "ERROR")
+            return False
+        прокрути
+        эту
+        страницу
+        вверх
 
     def resolve_key(key_name):
         key_name = key_name.lower().strip()
@@ -983,28 +1171,82 @@ def execute_action(action_data, scale_x, scale_y, img_w, img_h, full_screenshot)
                 return None
 
         # ── СКРОЛЛ ──
-        elif action == "scroll_down":
-            log("📜 ↓")
-            pyautogui.scroll(-5)
-            return "scroll_down"
-        elif action == "scroll_up":
-            log("📜 ↑")
-            pyautogui.scroll(5)
-            return "scroll_up"
-        elif action == "scroll_left":
-            log("📜 ←")
+        elif action in ("scroll_down", "scroll_up", "scroll_left", "scroll_right"):
+            raw_x = action_data.get("x", 0)
+            raw_y = action_data.get("y", 0)
+
+            # Количество кликов колеса
+            raw_clicks = action_data.get("clicks", action_data.get("text", 3))
             try:
-                pyautogui.hscroll(-5)
-            except AttributeError:
-                pyautogui.scroll(-5)
-            return "scroll_left"
-        elif action == "scroll_right":
-            log("📜 →")
+                clicks = int(raw_clicks) if raw_clicks not in (None, "") else 3
+                clicks = max(1, min(clicks, 5))
+            except (ValueError, TypeError):
+                clicks = 3
+
+            # Определяем координаты
+            if raw_x and raw_y and (float(raw_x) != 0 or float(raw_y) != 0):
+                real_x, real_y = to_screen_coords(raw_x, raw_y)
+                if real_x is None:
+                    # Если координаты кривые — скроллим в центре экрана
+                    real_x, real_y = REAL_W // 2, REAL_H // 2
+            else:
+                # Координаты не указаны — центр экрана (самое безопасное)
+                real_x, real_y = REAL_W // 2, REAL_H // 2
+                log("Координаты не указаны, скроллю в центре экрана", "DEBUG")
+
+            direction = action.replace("scroll_", "")
+            success = scroll_at_point(real_x, real_y, clicks, direction)
+
+            if success:
+                return f"{action}({clicks}) at ({real_x},{real_y})"
+            else:
+                log(f"Скролл не удался", "ERROR")
+                return None
+
+
+        # ── ПРОКРУТКА НА ПРОЦЕНТ ЭКРАНА (НОВОЕ) ──
+        elif action == "scroll_percent":
+            # Получаем процент из полей
+            raw_percent = action_data.get("percent", action_data.get("text", 70))
             try:
-                pyautogui.hscroll(5)
-            except AttributeError:
-                pyautogui.scroll(5)
-            return "scroll_right"
+                percent = float(raw_percent) if raw_percent not in (None, "") else 50.0
+                percent = max(1.0, min(percent, 100.0))  # от 1 до 100
+            except (ValueError, TypeError):
+                percent = 70.0
+
+            # Направление
+            direction = action_data.get("direction", "down").lower()
+            if direction not in ("up", "down", "left", "right"):
+                direction = "down"
+
+            # Определяем вертикальная или горизонтальная прокрутка
+            is_vertical = direction in ("up", "down")
+            scroll_direction = "vertical" if is_vertical else "horizontal"
+
+            # Вычисляем количество кликов
+            clicks = calculate_clicks_from_percent(percent, scroll_direction)
+
+            log(f"📜 Прокрутка на {percent}% экрана ({direction}) = {clicks} кликов", "DEBUG")
+
+            # Координаты для прокрутки
+            raw_x = action_data.get("x", 0)
+            raw_y = action_data.get("y", 0)
+
+            if raw_x and raw_y and (float(raw_x) != 0 or float(raw_y) != 0):
+                real_x, real_y = to_screen_coords(raw_x, raw_y)
+                if real_x is None:
+                    real_x, real_y = REAL_W // 2, REAL_H // 2
+            else:
+                real_x, real_y = REAL_W // 2, REAL_H // 2
+
+            # Выполняем прокрутку
+            success = scroll_at_point(real_x, real_y, clicks, direction)
+
+            if success:
+                return f"scroll_percent({percent}% {direction})"
+            else:
+                log("Прокрутка не удалась", "ERROR")
+                return None
 
         # ── ОЖИДАНИЕ ──
         elif action == "wait":
