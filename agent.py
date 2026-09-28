@@ -65,8 +65,9 @@ REASONING_EFFORT = "high"
 
 # ── Агент ──
 SCREEN_WIDTH = 1280
-CLICK_DELAY = 2
-MAX_STEPS = 100
+CLICK_DELAY = 0
+MAX_STEPS = 1000
+
 WAIT_AFTER = 1.5
 MAX_RETRIES = 2
 TIMEOUT = 90
@@ -1007,7 +1008,18 @@ def execute_action(action_data, scale_x, scale_y, img_w, img_h, full_screenshot)
 
         # ── ОЖИДАНИЕ ──
         elif action == "wait":
-            duration = float(action_data.get("duration", action_data.get("text", 2)))
+            # Безопасный парсинг длительности
+            raw_duration = action_data.get("duration", action_data.get("text", ""))
+
+            duration = 2.0  # значение по умолчанию
+            if raw_duration not in (None, ""):
+                try:
+                    duration = float(raw_duration)
+                    # Ограничиваем разумными пределами
+                    duration = max(0.1, min(duration, 30.0))
+                except (ValueError, TypeError):
+                    log(f"Не удалось распарсить duration='{raw_duration}', использую 2с", "WARN")
+
             log(f"⏳ {duration}с")
             time.sleep(duration)
             return f"wait({duration}s)"
