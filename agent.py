@@ -877,10 +877,6 @@ def execute_action(action_data, scale_x, scale_y, img_w, img_h, full_screenshot)
         except Exception as e:
             log(f"Клавиши тоже не сработали: {e}", "ERROR")
             return False
-        прокрути
-        эту
-        страницу
-        вверх
 
     def resolve_key(key_name):
         key_name = key_name.lower().strip()
