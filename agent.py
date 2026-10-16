@@ -59,7 +59,7 @@ HTTP_REFERRER = "http://localhost:8080"
 APP_TITLE = "AI-Agent-Extended"
 
 # ── Модель ──
-MODEL_NAME = "stealth/space-bunny-alpha"
+MODEL_NAME = "nvidia/nemotron-3.5-super-vl:free"
 
 # ── Reasoning ──
 ENABLE_REASONING = True
@@ -75,7 +75,7 @@ MAX_RETRIES = 2
 TIMEOUT = 90
 MAX_HISTORY = 100
 
-SCROLL_PIXELS_PER_CLICK = 50  # Сколько пикселей прокручивает 1 клик колеса
+SCROLL_PIXELS_PER_CLICK = 200  # Сколько пикселей прокручивает 1 клик колеса
 
 # ── Отладка ──
 SAVE_LOG = True
